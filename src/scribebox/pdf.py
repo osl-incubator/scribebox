@@ -1,4 +1,4 @@
-"""PDF output."""
+"""PDF export utilities."""
 
 from __future__ import annotations
 
@@ -6,63 +6,111 @@ from pathlib import Path
 
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.units import inch
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen.canvas import Canvas
 
 
-def write_pdf(path: Path, title: str, text: str) -> Path:
-    """Write a simple, readable PDF transcript.
+def write_pdf(
+    *,
+    text: str,
+    output_path: Path,
+    title: str | None = None,
+    font_name: str = "Helvetica",
+    font_size: int = 11,
+    margin_in: float = 0.75,
+) -> None:
+    """Write a plain-text PDF.
 
     Parameters
     ----------
-    path:
-        Output PDF path.
-    title:
-        Document title.
     text:
-        Transcript text.
-
-    Returns
-    -------
-    pathlib.Path
-        The written PDF path.
+        Text to write.
+    output_path:
+        Destination PDF path.
+    title:
+        Optional title shown at the top.
+    font_name:
+        ReportLab font name.
+    font_size:
+        Base font size for body text.
+    margin_in:
+        Page margins in inches.
     """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    canvas = Canvas(str(path), pagesize=LETTER)
+    canvas = Canvas(str(output_path), pagesize=LETTER)
     width, height = LETTER
 
-    margin = 0.75 * inch
-    x = margin
+    margin = margin_in * inch
+    usable_width = width - 2 * margin
     y = height - margin
+    line_height = font_size * 1.35
 
-    canvas.setTitle(title)
-    canvas.setFont("Helvetica-Bold", 14)
-    canvas.drawString(x, y, title)
+    def ensure_page(ypos: float) -> float:
+        if ypos >= margin:
+            return ypos
+        canvas.showPage()
+        canvas.setFont(font_name, font_size)
+        _, h = LETTER
+        return h - margin
 
-    y -= 0.35 * inch
-    canvas.setFont("Helvetica", 11)
+    def draw_wrapped(ypos: float, line: str, size: int) -> float:
+        for wrapped in _wrap_line(
+            line=line,
+            usable_width=usable_width,
+            font_name=font_name,
+            font_size=size,
+        ):
+            ypos = ensure_page(ypos)
+            canvas.drawString(margin, ypos, wrapped)
+            ypos -= line_height
+        return ypos
 
-    line_height = 14
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        if not line:
+    canvas.setFont(font_name, font_size)
+
+    if title:
+        canvas.setFont(font_name, font_size + 3)
+        y = draw_wrapped(y, title, font_size + 3)
+        y -= line_height * 0.25
+        canvas.setFont(font_name, font_size)
+
+    for raw in text.splitlines():
+        if not raw.strip():
             y -= line_height
+            y = ensure_page(y)
+            continue
+        y = draw_wrapped(y, raw, font_size)
+
+    canvas.save()
+
+
+def _wrap_line(
+    *,
+    line: str,
+    usable_width: float,
+    font_name: str,
+    font_size: int,
+) -> list[str]:
+    words = line.split()
+    if not words:
+        return [""]
+
+    out: list[str] = []
+    cur: list[str] = []
+
+    for word in words:
+        trial = " ".join([*cur, word])
+        if stringWidth(trial, font_name, font_size) <= usable_width:
+            cur.append(word)
             continue
 
-        while line:
-            max_chars = 95
-            chunk = line[:max_chars]
-            line = line[max_chars:]
+        if cur:
+            out.append(" ".join(cur))
+            cur = [word]
+            continue
 
-            if y < margin:
-                canvas.showPage()
-                canvas.setFont("Helvetica", 11)
-                y = height - margin
+        out.append(word)
 
-            canvas.drawString(x, y, chunk)
-            y -= line_height
-
-    canvas.showPage()
-    canvas.save()
-    return path
+    if cur:
+        out.append(" ".join(cur))
+    return out

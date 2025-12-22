@@ -1,82 +1,68 @@
-"""YouTube download functionality."""
+"""YouTube helpers."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from .exceptions import DependencyMissingError
-from .validators import validate_youtube_url
+from .errors import ScribeboxError
 
 
-def download_youtube_audio(
-    url: str,
-    outdir: Path,
-) -> Path:
-    """Download best-quality audio from a YouTube URL.
-
-    This function requires the optional dependency `yt-dlp`.
+def download_youtube_audio(*, url: str, outdir: Path) -> Path:
+    """Download YouTube audio as MP3 using yt-dlp.
 
     Parameters
     ----------
     url:
-        YouTube URL.
+        YouTube video URL.
     outdir:
-        Directory where the audio will be written.
+        Output directory for the produced MP3.
 
     Returns
     -------
     pathlib.Path
-        Path to the downloaded audio file.
+        Path to the produced MP3 file.
 
     Raises
     ------
-    DependencyMissingError
-        If `yt-dlp` is not installed.
+    ScribeboxError
+        If yt-dlp is missing or the download fails.
     """
-
-    validate_youtube_url(url)
-
     try:
-        from yt_dlp import YoutubeDL  # type: ignore
+        import yt_dlp
     except Exception as exc:  # pragma: no cover
-        raise DependencyMissingError(
-            "Missing dependency: yt-dlp. Install with "
-            "`pip install scribebox[youtube]`."
+        raise ScribeboxError(
+            "YouTube support requires 'yt-dlp'. "
+            "Install with: pip install -e '.[youtube]'"
         ) from exc
 
     outdir.mkdir(parents=True, exist_ok=True)
-    template = str(outdir / "%(id)s.%(ext)s")
 
-    ydl_opts: dict[str, object] = {
+    opts = {
         "format": "bestaudio/best",
-        "outtmpl": template,
-        "noplaylist": True,
+        "outtmpl": str(outdir / "%(id)s.%(ext)s"),
         "quiet": True,
-        "no_warnings": True,
+        "noplaylist": True,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
-                "preferredcodec": "wav",
-                "preferredquality": "0",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
             }
         ],
     }
 
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        video_id = info.get("id")
-        if not isinstance(video_id, str) or not video_id:
-            raise DependencyMissingError(
-                "yt-dlp did not return a video id."
-            )
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except Exception as exc:
+        raise ScribeboxError(f"Failed to download YouTube audio: {exc}") from exc
 
-    candidate = outdir / f"{video_id}.wav"
-    if candidate.exists():
-        return candidate
+    video_id = info.get("id") if isinstance(info, dict) else None
+    if not video_id:
+        raise ScribeboxError("Could not determine YouTube video id.")
 
-    for p in outdir.glob(f"{video_id}.*"):
-        return p
+    mp3_path = outdir / f"{video_id}.mp3"
+    if not mp3_path.exists():
+        raise ScribeboxError("yt-dlp finished but MP3 was not created.")
 
-    raise DependencyMissingError(
-        "Audio download finished, but output file was not found."
-    )
+    return mp3_path

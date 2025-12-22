@@ -1,4 +1,4 @@
-"""FastAPI web app."""
+"""Minimal FastAPI web app."""
 
 from __future__ import annotations
 
@@ -6,119 +6,87 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
-from .config import OutputOptions, TranscribeOptions
-from .exceptions import ScribeboxError
-from .service import transcribe_local_file, transcribe_youtube_url
-from .transcribe.factory import build_transcriber
+from .backends import TranscribeOptions
+from .core import run_transcription
+from .youtube import download_youtube_audio
 
-
-app = FastAPI(title="Scribebox")
+app = FastAPI(title="scribebox")
 
 
-_INDEX_HTML = """<!doctype html>
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    """Render a small HTML form."""
+    return """<!doctype html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Scribebox</title>
-  </head>
-  <body style="font-family: sans-serif; max-width: 820px; margin: 2rem auto;">
-    <h1>Scribebox</h1>
-    <p>Transcribe YouTube URLs or local audio/video files.</p>
+  <head><meta charset="utf-8"><title>scribebox</title></head>
+  <body>
+    <h2>scribebox</h2>
 
-    <h2>YouTube URL</h2>
-    <form action="/transcribe/url" method="post">
-      <input
-        type="text"
-        name="url"
-        placeholder="https://www.youtube.com/watch?v=..."
-        style="width: 100%; padding: 0.6rem;"
-      />
-      <label style="display:block; margin-top:0.6rem;">
-        <input type="checkbox" name="pdf" /> Also generate PDF
-      </label>
-      <button style="margin-top: 0.8rem; padding: 0.6rem 1rem;">
-        Transcribe URL
-      </button>
+    <h3>YouTube URL</h3>
+    <form action="/transcribe-url" method="post">
+      <input type="text" name="url" size="80" placeholder="YouTube URL" />
+      <label><input type="checkbox" name="pdf" /> PDF</label>
+      <input type="text" name="language" placeholder="language (e.g. en)" />
+      <button type="submit">Transcribe</button>
     </form>
 
-    <h2 style="margin-top: 2rem;">Upload file</h2>
-    <form action="/transcribe/file" method="post" enctype="multipart/form-data">
+    <h3>Upload audio (mp3/mp4/wav/m4a)</h3>
+    <form action="/transcribe-file" method="post"
+          enctype="multipart/form-data">
       <input type="file" name="file" />
-      <label style="display:block; margin-top:0.6rem;">
-        <input type="checkbox" name="pdf" /> Also generate PDF
-      </label>
-      <button style="margin-top: 0.8rem; padding: 0.6rem 1rem;">
-        Transcribe file
-      </button>
+      <label><input type="checkbox" name="pdf" /> PDF</label>
+      <input type="text" name="language" placeholder="language (e.g. en)" />
+      <button type="submit">Transcribe</button>
     </form>
-
-    <p style="margin-top: 2rem; color: #555;">
-      Outputs are written to <code>./out</code> by default.
-    </p>
   </body>
 </html>
 """
 
 
-@app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return _INDEX_HTML
-
-
-@app.post("/transcribe/url")
+@app.post("/transcribe-url")
 def transcribe_url(
     url: str = Form(...),
-    pdf: str | None = Form(default=None),
-) -> PlainTextResponse:
-    transcriber = build_transcriber("faster-whisper")
-    t_opts = TranscribeOptions()
-    o_opts = OutputOptions(outdir=Path("out"), write_pdf=pdf is not None)
+    pdf: bool = Form(False),
+    language: str | None = Form(None),
+) -> FileResponse:
+    """Download and transcribe a YouTube URL."""
+    outdir = Path(tempfile.mkdtemp(prefix="scribebox_"))
+    audio = download_youtube_audio(url=url, outdir=outdir)
 
-    try:
-        out = transcribe_youtube_url(
-            url,
-            transcriber=transcriber,
-            options=t_opts,
-            outputs=o_opts,
-        )
-    except ScribeboxError as exc:
-        return PlainTextResponse(f"Error: {exc}", status_code=400)
-
-    msg = f"Text: {out.text_path}\n"
-    if out.pdf_path is not None:
-        msg += f"PDF:  {out.pdf_path}\n"
-    return PlainTextResponse(msg)
+    options = TranscribeOptions(model="large-v3", language=language)
+    result = run_transcription(
+        audio_path=audio,
+        outdir=outdir,
+        pdf=pdf,
+        backend="faster-whisper",
+        options=options,
+        title=url,
+    )
+    chosen = result.pdf_path if pdf else result.text_path
+    return FileResponse(path=str(chosen), filename=chosen.name)
 
 
-@app.post("/transcribe/file")
-async def transcribe_file(
+@app.post("/transcribe-file")
+async def transcribe_file_endpoint(
     file: UploadFile = File(...),
-    pdf: str | None = Form(default=None),
-) -> PlainTextResponse:
-    suffix = Path(file.filename or "upload").suffix or ".bin"
-    transcriber = build_transcriber("faster-whisper")
-    t_opts = TranscribeOptions()
-    o_opts = OutputOptions(outdir=Path("out"), write_pdf=pdf is not None)
+    pdf: bool = Form(False),
+    language: str | None = Form(None),
+) -> FileResponse:
+    """Transcribe an uploaded file."""
+    outdir = Path(tempfile.mkdtemp(prefix="scribebox_"))
+    path = outdir / (file.filename or "audio.bin")
+    path.write_bytes(await file.read())
 
-    with tempfile.TemporaryDirectory(prefix="scribebox_upload_") as tmpdir:
-        tmp_path = Path(tmpdir) / f"upload{suffix}"
-        content = await file.read()
-        tmp_path.write_bytes(content)
-
-        try:
-            out = transcribe_local_file(
-                tmp_path,
-                source_id=file.filename or "upload",
-                transcriber=transcriber,
-                options=t_opts,
-                outputs=o_opts,
-            )
-        except ScribeboxError as exc:
-            return PlainTextResponse(f"Error: {exc}", status_code=400)
-
-    msg = f"Text: {out.text_path}\n"
-    if out.pdf_path is not None:
-        msg += f"PDF:  {out.pdf_path}\n"
-    return PlainTextResponse(msg)
+    options = TranscribeOptions(model="large-v3", language=language)
+    result = run_transcription(
+        audio_path=path,
+        outdir=outdir,
+        pdf=pdf,
+        backend="faster-whisper",
+        options=options,
+        title=file.filename,
+    )
+    chosen = result.pdf_path if pdf else result.text_path
+    return FileResponse(path=str(chosen), filename=chosen.name)

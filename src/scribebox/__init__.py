@@ -1,5 +1,7 @@
-"""Scribebox package.
+"""scribebox package."""
 
-This project provides a small toolkit to transcribe YouTube URLs or local
-audio/video files to text and PDF outputs.
-"""
+from __future__ import annotations
+
+__all__ = ["__version__"]
+
+__version__ = "0.2.1"
