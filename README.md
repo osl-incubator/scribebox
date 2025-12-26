@@ -1,6 +1,3 @@
-Here’s an **updated, more professional README.md** that matches your current `pyproject.toml` (**v0.2.1**) and documents **every CLI parameter** that exists in the app today, with practical examples and troubleshooting.
-
-````markdown
 # scribebox
 
 Local-first transcription for **YouTube URLs** and **audio/video files**
